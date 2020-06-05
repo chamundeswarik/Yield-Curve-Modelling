@@ -1,0 +1,154 @@
+---
+title: "Chamu_5661-Project_R_model"
+author: "Chamu"
+date: "4/15/2020"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+# Valuation of Caps using Black model and LIBOR/Monte Carlo
+
+Caps and Floors are counterparts to Call and Put options in equity market used for hedging floating rate risk. They set the minimum return levels on one side of interest rate movement and allow the profit on the other side.
+
+```{r setup}
+
+#These inputs can be modified
+
+N <- 1000000          # Notional
+n_sim <- 100000       # number of Monte carlo simulation
+tau <- 0.5            # frequency of cap/floor or δ
+sigma <- 0.15         # volatility
+K <- 0.05             # strike rate
+n <- 4                # number of forwards excluding f_0
+f <- 0.05             # forward rate
+
+```
+
+A caplet is a call option on the zero-coupon yield prevailing at time ti – δ for a period of length δ, but where the payment takes place at time ti although it is already fixed at time ti - δ
+
+Calculating **discount factor** used for both models
+
+```{r disc}
+
+t <- seq(0, n * tau, tau)
+forward <- matrix(NA, n + 1, n + 1)
+forward[, 1] <- f
+
+Discount <- function(tau, forward){
+  discount <- 1 / (1 + tau * forward)
+  discount[is.na(forward)] <- 1
+  for (i in 2 : (n + 1)){
+    discount[i, ] <- discount[i, ] * discount[i - 1, ]
+  }
+  discount[is.na(forward)] <- NA
+  return(discount)
+}
+
+discount <- Discount(tau = tau, forward = forward)
+
+```
+
+**Black Model** : Assumptions are as below
+• Underlying forward rate or swap rate is log normally distributed 
+• volatility of the underlying is constant 
+• Prices are arbitrage free 
+• There is continuous trading in all instruments
+
+```{r model_1}
+
+cap <- function(){
+  v <- sigma * sqrt(t[2 : (n + 1)])
+  d1 <- (log(forward[2 : (n + 1), 1] / K) + 1/2 * v ^ 2) / v
+  d2 <- (log(forward[2 : (n + 1), 1] / K) - 1/2 * v ^ 2) / v
+  
+  cap <- N * discount[2 : (n + 1), 1] * tau * 
+    (forward[2 : (n + 1), 1] * pnorm(d1) - K * pnorm(d2))
+}
+Caplets <- cap()
+
+```
+
+**LIBOR market model** using Monte Carlo method:
+
+The basic idea behind a market model is to model interest rates directly observable in the market, which are the forward LIBOR rates in the case of the LIBOR market model (As opposed to instantaneous short rates in short rate models or instantaneous forward rates in the HJM framework, which are mathematical abstractions).
+
+Similar to the Black-76 model the LIBOR market model assumes a log-normal process for each forward LIBOR rate under the Ti-forward measure.
+
+```{r model_2}
+
+# update Forward rate
+MC <- function(){
+  DW <- sqrt(tau) * qnorm(runif(n, 0, 1))
+  LMMDrift <- function(forward, j){
+    if (j <= n){
+      temp <- sapply(j : n, function(k) sum(forward[k : n] / (1 + tau * forward[k : n])))
+      return(c(temp * tau * sigma ^ 2, 0))
+    }
+    return(0)
+  }
+  
+  for (j in 2 : (n + 1)){
+    forward[j : (n + 1), j] <- forward[j : (n + 1), j - 1] *
+      exp((-LMMDrift(forward = forward[, j - 1], j) - 1/2 * sigma ^ 2) * tau + sigma * DW[j - 1])
+  }
+# update the Discount factor
+  discount <- Discount(tau = tau, forward = forward)
+  
+  MC_raw_payoff <- pmax(diag(forward) - K, 0)[2 : (n + 1)]
+  
+# change Numeraire
+  Change <- function(){
+    temp1 <- diag(discount)[2 : (n + 1)]
+    temp2 <- discount[2 : (n +1), 1]
+    temp3 <- discount[(n + 1), 2 : (n + 1)]
+    temp4 <- discount[(n + 1), 1]
+    
+    result <- MC_raw_payoff * (temp1 / temp2) / (temp3 / temp4)
+  }
+# calculate corrected Payoff
+  MC_corrected_payoff <- Change()
+  result <- c(MC_raw_payoff, MC_corrected_payoff)
+  return(result)
+}
+result <- matrix(replicate(n_sim, MC()), n_sim, 2 * n, byrow = TRUE)
+colnames(result) <- c(paste0('V', c(1 : n), '_RAW'),
+                      paste0('V', c(1 : n), '_CORR'))
+
+```
+
+**Comparison** of two models:
+
+```{r comp}
+
+construct_table <- function(){
+  table <- matrix(NA, n + 1, 3)
+  colnames(table) <- c('MC', 'Black', 'ERROR')
+  rownames(table) <- c(paste0('Caplet', 1 : n), 'Cap')
+  
+  temp <- sapply(1 : n, function(i) mean(result[, n + i]))
+  temp <- temp * tau * discount[2 : (n + 1), 1] * N
+  table[1 : n, 1] <- temp
+  table[1 : n, 2] <- Caplets
+  table[n + 1, 1 : 2] <- colSums(table[1 : n, 1 : 2])
+  table[, 3] <- (table[, 1] - table[, 2]) / table[, 2]
+  return(table)
+}
+table <- construct_table()
+
+```
+In contrast to the Black model, LIBOR market model describes the dynamic of a whole family of **forward rates under a common measure**. By means of multivariate Girsanov's theorem one can switch between the different T-Forward measures. 
+
+Below is the comparison table and simulation results:
+
+```{r tab}
+
+table
+
+```
+
+```{r sim}
+
+result
+
+```
